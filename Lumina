@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lumina Connect AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    animation: { 
+                        'fade-in': 'fadeIn 0.3s ease-out',
+                        'pulse-slow': 'pulse 3s infinite'
+                    },
+                    keyframes: { fadeIn: { '0%': { opacity: 0, transform: 'translateY(10px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } } }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #020617; color: white; overflow: hidden; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .glass { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+        .ai-glow { box-shadow: 0 0 15px rgba(99, 102, 241, 0.3); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "react": "https://esm.sh/react@18.2.0",
+                "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+                "lucide-react": "https://esm.sh/lucide-react@0.344.0",
+                "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+                "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+                "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import React, { useState, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Send, Settings, Zap, Sparkles, Brain, Wand2, Loader2 } from 'lucide-react';
+        import { initializeApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+        import { getFirestore, collection, addDoc, onSnapshot, query, serverTimestamp } from 'firebase/firestore';
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'lumina-ai-v1';
+        const apiKey = ""; 
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        const THEMES = {
+            neon: { name: 'Noche Neón', primary: 'bg-indigo-600', gradient: 'from-slate-950 via-indigo-950 to-slate-950' },
+            sunset: { name: 'Atardecer', primary: 'bg-rose-600', gradient: 'from-slate-950 via-rose-950 to-slate-950' },
+            emerald: { name: 'Esmeralda', primary: 'bg-emerald-600', gradient: 'from-slate-950 via-emerald-950 to-slate-950' }
+        };
+
+        async function callGemini(prompt, systemPrompt) {
+            let retries = 0;
+            const delays = [1000, 2000, 4000];
+            while (retries < 3) {
+                try {
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ parts: [{ text: prompt }] }],
+                            systemInstruction: { parts: [{ text: systemPrompt }] }
+                        })
+                    });
+                    const result = await response.json();
+                    return result.candidates?.[0]?.content?.parts?.[0]?.text || "Error en IA";
+                } catch (e) {
+                    await new Promise(res => setTimeout(res, delays[retries]));
+                    retries++;
+                }
+            }
+            return "Error de conexión.";
+        }
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [messages, setMessages] = useState([]);
+            const [input, setInput] = useState('');
+            const [themeKey, setThemeKey] = useState('neon');
+            const [isAiLoading, setIsAiLoading] = useState(false);
+            const [aiMode, setAiMode] = useState(false);
+            const scrollRef = useRef(null);
+
+            useEffect(() => {
+                const login = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else { await signInAnonymously(auth); }
+                };
+                login();
+                return onAuthStateChanged(auth, setUser);
+            }, []);
+
+            useEffect(() => {
+                if (!user) return;
+                const msgCol = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+                return onSnapshot(query(msgCol), (snap) => {
+                    const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setMessages(list.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)));
+                    setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+                });
+            }, [user]);
+
+            const sendMessage = async (e) => {
+                e?.preventDefault();
+                if (!input.trim() || !user) return;
+                const text = input;
+                setInput('');
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
+                    text, uid: user.uid, createdAt: serverTimestamp()
+                });
+                if (aiMode) {
+                    const res = await callGemini(text, "Responde breve.");
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
+                        text: res, uid: "AI", createdAt: serverTimestamp(), isAi: true
+                    });
+                }
+            };
+
+            const improveMessage = async () => {
+                setIsAiLoading(true);
+                const res = await callGemini(`Mejora: ${input}`, "Solo el texto mejorado.");
+                setInput(res);
+                setIsAiLoading(false);
+            };
+
+            const theme = THEMES[themeKey];
+
+            return React.createElement('div', { className: `flex flex-col h-screen w-full bg-gradient-to-b ${theme.gradient}` },
+                React.createElement('header', { className: "h-16 glass flex items-center justify-between px-6 shrink-0" },
+                    React.createElement('div', { className: "flex items-center gap-3" },
+                        React.createElement('div', { className: `w-9 h-9 ${theme.primary} rounded-xl flex items-center justify-center` }, React.createElement(Zap, { size: 20 })),
+                        React.createElement('span', { className: "font-black" }, "LUMINA")
+                    ),
+                    React.createElement('div', { className: "flex gap-2" },
+                        React.createElement('button', { onClick: () => setAiMode(!aiMode), className: `p-2 rounded-lg border ${aiMode ? 'bg-indigo-500 border-indigo-500' : 'bg-white/5 border-white/10'}` }, React.createElement(Brain, { size: 20 })),
+                        React.createElement('button', { onClick: () => setThemeKey(t => t === 'neon' ? 'sunset' : 'neon'), className: "p-2 bg-white/5 rounded-lg border border-white/10" }, React.createElement(Settings, { size: 20 }))
+                    )
+                ),
+                React.createElement('div', { className: "flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar" },
+                    messages.map((m, i) => (
+                        React.createElement('div', { key: i, className: `flex ${m.uid === user?.uid ? 'justify-end' : 'justify-start'} animate-fade-in` },
+                            React.createElement('div', { className: `max-w-[80%] px-4 py-3 rounded-2xl text-sm ${m.uid === user?.uid ? theme.primary : 'bg-white/10'}` }, m.text)
+                        )
+                    )),
+                    React.createElement('div', { ref: scrollRef })
+                ),
+                React.createElement('footer', { className: "p-4 bg-black/60 border-t border-white/5" },
+                    input.length > 3 && React.createElement('button', { onClick: improveMessage, className: "mb-2 text-[10px] bg-indigo-500/20 text-indigo-300 px-3 py-1 rounded-full border border-indigo-500/30" }, "MEJORAR ✨"),
+                    React.createElement('form', { onSubmit: sendMessage, className: "flex gap-3" },
+                        React.createElement('input', { className: "flex-1 bg-white/5 rounded-xl px-4 py-3 text-sm border border-white/10", value: input, onChange: e => setInput(e.target.value), placeholder: "Escribe..." }),
+                        React.createElement('button', { type: "submit", className: `w-12 h-12 rounded-xl flex items-center justify-center ${theme.primary}` }, React.createElement(Send, { size: 20 }))
+                    )
+                )
+            );
+        }
+        createRoot(document.getElementById('root')).render(React.createElement(App));
+    </script>
+</body>
+</html>
